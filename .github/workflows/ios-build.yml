@@ -1,0 +1,61 @@
+name: iOS App Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['ios/**', 'prompts/**']
+
+jobs:
+  build:
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen
+
+      - name: Build unsigned app (simulator)
+        run: |
+          sim=$(xcrun simctl list devices available | grep -Eo 'iPhone [0-9]+[A-Za-z ]*\(' | head -1 | sed 's/ ($//')
+          echo "simulator: $sim"
+          xcodebuild build -scheme IPhoneAgent \
+            -destination "platform=iOS Simulator,name=$sim" \
+            -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO
+
+      - name: Build signed app (device, requires secrets)
+        if: ${{ secrets.IA_DEVELOPMENT_TEAM != '' }}
+        env:
+          IA_DEVELOPMENT_TEAM: ${{ secrets.IA_DEVELOPMENT_TEAM }}
+          IA_BUNDLE_ID: ${{ secrets.IA_BUNDLE_ID }}
+        run: |
+          cat > Config/Local.xcconfig <<EOF
+          DEVELOPMENT_TEAM = $IA_DEVELOPMENT_TEAM
+          IA_BUNDLE_ID = $IA_BUNDLE_ID
+          IA_ENTITLEMENTS = IPhoneAgent/IPhoneAgent.entitlements
+          IA_WIDGET_ENTITLEMENTS = AgentActivity/AgentActivity.entitlements
+          EOF
+          xcodegen
+          xcodebuild build -scheme IPhoneAgent \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build-dev \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM=$IA_DEVELOPMENT_TEAM \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            -allowProvisioningUpdates \
+            | xcpretty || true
+          echo "NOTE: la firma automatica su CI richiede la chiave di distribuzione"
+          echo "(certificato + profilo). Alternativa semplice: TestFlight via fastlane."
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPhoneAgent-build
+          path: ios/build-*/
+          if-no-files-found: ignore
